@@ -1,6 +1,7 @@
 # Real-time DVXplorer visualization with Digital Coded Exposure (DCE)
 # Visualize event camera data with VisPy and apply Digital Coded Exposure
 
+from re import A
 import dv_processing as dv
 import vispy
 from vispy import scene
@@ -17,6 +18,14 @@ DOWNSAMPLING = 10   # Reduce for more data, increase for better performance
 BUFFER_SIZE = 50000  # Number of events to keep in buffer
 UPDATE_INTERVAL = 0.1  # Update visualization every 100ms
 
+# Buffer and visualization settings
+EVENTS_PER_PLOT = 2000  # Number of events to accumulate before plotting
+BUFFER_CLEAR_SIZE = 10000  # Number of events that triggers buffer clearing
+
+# Frame management settings
+MAX_FRAMES = 10  # Maximum number of frames to keep in history
+FRAME_SPACING = 50  # Spacing between frames in z-axis
+
 # --- Digital Coded Exposure Functions ---
 def boxcar_shutter(t, period=0.1, duty=0.25, phase=0.0):
     """Boxcar shutter: open for duty*period, closed otherwise."""
@@ -29,8 +38,34 @@ def morlet_shutter(t, f=100.0, sigma=0.01):
 
 # Global data buffers for real-time streaming
 event_buffer = deque(maxlen=BUFFER_SIZE)
+frame_buffer = deque(maxlen=MAX_FRAMES)  # Store recent frames
 data_lock = threading.Lock()
 running = True
+
+def process_frame(events):
+    """Process a batch of events into a frame"""
+    # Convert to numpy arrays efficiently
+    events_array = np.array([(e['x'], e['y'], e['polarity']) 
+                          for e in events],
+                          dtype=[('x', 'i4'), ('y', 'i4'), ('polarity', 'i4')])
+    
+    # Get unique positions and calculate polarities
+    unique_positions, indices = np.unique(
+        events_array[['x', 'y']], 
+        return_inverse=True
+    )
+    
+    # Calculate average polarity for each position
+    polarities = events_array['polarity'].astype(float)
+    position_counts = np.bincount(indices)
+    polarity_sums = np.bincount(indices, weights=polarities)
+    avg_polarities = polarity_sums / position_counts
+    
+    return {
+        'positions': unique_positions,
+        'polarities': avg_polarities,
+        'timestamp': time.time()
+    }
 
 def stream_camera_data():
     """Stream data from DVXplorer camera"""
@@ -96,62 +131,62 @@ def stream_camera_data():
 
 def process_events():
     """Process events from buffer and return visualization data"""
-    global event_buffer
+    global event_buffer, frame_buffer
     
     with data_lock:
-        if len(event_buffer) == 0:
-            return None, None, None
+        if len(event_buffer) < EVENTS_PER_PLOT:
+            return None, None
             
-        # Convert buffer to lists
         events_list = list(event_buffer)
+        if len(event_buffer) >= BUFFER_CLEAR_SIZE:
+            # Create new frame and add to buffer
+            frame = process_frame(events_list)
+            frame_buffer.append(frame)
+            event_buffer.clear()
     
     if len(events_list) == 0:
-        return None, None, None
+        return None, None
     
-    # Extract data from events
-    t = np.array([e['timestamp'] for e in events_list])
-    x = np.array([e['x'] for e in events_list])
-    y = np.array([e['y'] for e in events_list])
-    polarity = np.array([e['polarity'] for e in events_list])
+    # Combine all frames into visualization data
+    all_points = []
+    all_colors = []
     
-    # Convert timestamps to seconds
-    t = t / 1e6
+    # Add current frame points
+    current_frame = process_frame(events_list)
+    frame_points = np.column_stack((
+        current_frame['positions']['x'],
+        current_frame['positions']['y'],
+        np.zeros(len(current_frame['positions']))  # Current frame at z=0
+    ))
+    frame_colors = np.zeros((len(current_frame['polarities']), 4))
+    frame_colors[current_frame['polarities'] == 0] = [1.0, 0.0, 0.0, 0.8]
+    frame_colors[current_frame['polarities'] == 1] = [0.0, 1.0, 0.0, 0.8]
     
-    # Normalize and scale time axis for better visibility
-    if t.max() > t.min():
-        t_scaled = (t - t.min()) * 500
-    else:
-        t_scaled = t * 0
+    all_points.append(frame_points)
+    all_colors.append(frame_colors)
     
-    # Flip x and y axis to match footage
-    if x.max() > 0:
-        x = x.max() - x
-    if y.max() > 0:
-        y = y.max() - y
+    # Add historical frames
+    for z_index, frame in enumerate(frame_buffer, start=1):
+        frame_points = np.column_stack((
+            frame['positions']['x'],
+            frame['positions']['y'],
+            np.full(len(frame['positions']), z_index * FRAME_SPACING)
+        ))
+        
+        frame_colors = np.zeros((len(frame['polarities']), 4))
+        frame_colors[frame['polarities'] == 0] = [1.0, 0.0, 0.0, 0.8]
+        frame_colors[frame['polarities'] == 1] = [0.0, 1.0, 0.0, 0.8]
+        
+        all_points.append(frame_points)
+        all_colors.append(frame_colors)
     
-    # --- Apply Digital Coded Exposure ---
-    # Map polarity to ±1
-    polarity_signed = np.where(polarity > 0, 1, -1)
+    if not all_points:
+        return None, None
+        
+    points = np.vstack(all_points)
+    colors = np.vstack(all_colors)
     
-    # Choose shutter function
-    period = 0.1   # seconds
-    duty = 0.25    # 25% duty cycle
-    shutter_vals = np.array([boxcar_shutter(tt, period, duty) for tt in t])
-    
-    weighted_polarity = polarity_signed * shutter_vals
-    
-    # Stack into 3D points
-    points = np.column_stack((t_scaled, x, y))
-    
-    # Color by weighted polarity
-    red   = [1.0, 0.0, 0.0, 1.0]  # negative
-    green = [0.0, 1.0, 0.0, 1.0]  # positive
-    colors = np.array([
-        green if wp > 0 else red if wp < 0 else [0.5, 0.5, 0.5, 0.3]
-        for wp in weighted_polarity
-    ])
-    
-    return points, colors, (t_scaled, x, y)
+    return points, colors
 
 # --- Real-time Visualization with VisPy ---
 canvas = scene.SceneCanvas(keys='interactive', show=True, bgcolor='black',
@@ -179,9 +214,17 @@ xyz_axis.transform = vispy.visuals.transforms.STTransform(scale=(100*scale_facto
 # status_text = Text("Connecting to camera...", color='white', font_size=8000, 
 #                    pos=[50, 50, 50], parent=view.scene)
 
-# 3D camera
-view.camera = scene.cameras.TurntableCamera(fov=45, elevation=30, azimuth=60)
-view.camera.set_range()
+# 3D camera with interactive controls
+view.camera = scene.cameras.TurntableCamera(fov=30, elevation=0, azimuth=0)
+
+# Center camera on the middle of the sensor
+view.camera.distance = 100  # Initial camera distance
+
+# Set up camera ranges for better interaction
+view.camera.set_range(x=(-500, 500), y=(-12, 36), z=(6, 42))
+
+# Enable interactive features
+view.interactive = True  # Enable all interactive features at once
 
 update_count = 0
 
@@ -191,39 +234,37 @@ def update_visualization():
     
     update_count += 1
     
-    points, colors, ranges = process_events()
+    points, colors = process_events()
     
     if points is not None and len(points) > 0:
         # Debug output every 10 updates
         if update_count % 10 == 0:
             print(f"Visualization update {update_count}: Displaying {len(points)} points, buffer has {len(event_buffer)} events")
         
-        # Update scatter plot
+        min_vals = points.min(axis=0)
+        max_vals = points.max(axis=0)
+        center = (min_vals + max_vals) / 2
+        
+        # Optionally, calculate the span and set distance
+        span = np.linalg.norm(max_vals - min_vals)
+        distance = span * scale_factor * 2  # Adjust multiplier as needed
+
+        # Update camera
+        view.camera.center = center * scale_factor
+        view.camera.distance = distance
+
+        # Update scatter plot with fixed size for better performance
         scatter.set_data(points*scale_factor, face_color=colors, size=3, edge_color=None)
         
-        # Update axis scaling
-        t_scaled, x, y = ranges
-        if t_scaled.max() > 0 and x.max() > 0 and y.max() > 0:
+        # Update axis scaling only on significant changes
+        if points.max() > 0:
+            max_vals = points.max(axis=0)
             xyz_axis.transform = vispy.visuals.transforms.STTransform(
-                translate=(0, 0, 0), scale=(t_scaled.max()*scale_factor, x.max()*scale_factor, y.max()*scale_factor)
+                translate=(0, 0, 0), scale=(max_vals[0]*scale_factor, max_vals[1]*scale_factor, max_vals[2]*scale_factor)
             )
-            
-            # Update text positions
-            text_x.pos = [t_scaled.max() + 50, 0, 0]
-            text_y.pos = [0, x.max() + 50, 0]
-            text_z.pos = [0, 0, y.max() + 50]
-            
-            # Update status
-            status_text.text = f"Events: {len(points)} | Buffer: {len(event_buffer)}/{BUFFER_SIZE}"
-            status_text.pos = [t_scaled.max() / 2, -50, -50]
-            
-            # Auto-fit camera to data
-            view.camera.set_range()
     else:
         if update_count % 20 == 0:
             print(f"Visualization update {update_count}: No events yet, buffer size: {len(event_buffer)}")
-        status_text.text = "Waiting for events... (move something in front of camera)"
-        status_text.pos = [100, 100, 0]
     
     # Schedule next update
     if running:
