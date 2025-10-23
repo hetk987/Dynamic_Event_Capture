@@ -166,17 +166,18 @@ scatter.set_data(np.array([[0, 0, 0]]), face_color='white', size=1)
 view.add(scatter)
 
 # XYZ axis with labels
+scale_factor = 0.1
 xyz_axis = visuals.XYZAxis(parent=view.scene)
-xyz_axis.transform = vispy.visuals.transforms.STTransform(scale=(100, 100, 100))
+xyz_axis.transform = vispy.visuals.transforms.STTransform(scale=(100*scale_factor, 100*scale_factor, 100*scale_factor))
 
 # Text labels for axes
-text_x = Text("Time (s)", color='red', font_size=10000, pos=[100, 0, 0], parent=view.scene)
-text_y = Text("X", color='green', font_size=10000, pos=[0, 100, 0], parent=view.scene)
-text_z = Text("Y", color='blue', font_size=10000, pos=[0, 0, 100], parent=view.scene)
+# text_x = Text("Time (s)", color='red', font_size=10000, pos=[100, 0, 0], parent=view.scene)
+# text_y = Text("X", color='green', font_size=10000, pos=[0, 100, 0], parent=view.scene)
+# text_z = Text("Y", color='blue', font_size=10000, pos=[0, 0, 100], parent=view.scene)
 
-# Status text
-status_text = Text("Connecting to camera...", color='white', font_size=8000, 
-                   pos=[50, 50, 50], parent=view.scene)
+# # Status text
+# status_text = Text("Connecting to camera...", color='white', font_size=8000, 
+#                    pos=[50, 50, 50], parent=view.scene)
 
 # 3D camera
 view.camera = scene.cameras.TurntableCamera(fov=45, elevation=30, azimuth=60)
@@ -198,13 +199,13 @@ def update_visualization():
             print(f"Visualization update {update_count}: Displaying {len(points)} points, buffer has {len(event_buffer)} events")
         
         # Update scatter plot
-        scatter.set_data(points, face_color=colors, size=3, edge_color=None)
+        scatter.set_data(points*scale_factor, face_color=colors, size=3, edge_color=None)
         
         # Update axis scaling
         t_scaled, x, y = ranges
         if t_scaled.max() > 0 and x.max() > 0 and y.max() > 0:
             xyz_axis.transform = vispy.visuals.transforms.STTransform(
-                translate=(0, 0, 0), scale=(t_scaled.max(), x.max(), y.max())
+                translate=(0, 0, 0), scale=(t_scaled.max()*scale_factor, x.max()*scale_factor, y.max()*scale_factor)
             )
             
             # Update text positions
