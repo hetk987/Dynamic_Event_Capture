@@ -1,0 +1,7 @@
+# Core visualization packages
+vispy
+numpy
+PyQt6
+
+# DVXplorer camera support
+dv-processing
