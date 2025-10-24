@@ -4,6 +4,7 @@
 from re import A
 import dv_processing as dv
 import vispy
+vispy.use('Glfw')
 from vispy import scene
 from vispy.scene import visuals
 from vispy.scene.visuals import Text
@@ -14,17 +15,24 @@ import threading
 from collections import deque
 
 # Camera settings
-DOWNSAMPLING = 10   # Reduce for more data, increase for better performance
+DOWNSAMPLING = 50   # Reduce for more data, increase for better performance
 BUFFER_SIZE = 50000  # Number of events to keep in buffer
 UPDATE_INTERVAL = 0.1  # Update visualization every 100ms
 
 # Buffer and visualization settings
-EVENTS_PER_PLOT = 2000  # Number of events to accumulate before plotting
-BUFFER_CLEAR_SIZE = 10000  # Number of events that triggers buffer clearing
+EVENTS_PER_PLOT = 1000  # Number of events to accumulate before plotting
+BUFFER_CLEAR_SIZE = 5000  # Number of events that triggers buffer clearing
 
 # Frame management settings
-MAX_FRAMES = 10  # Maximum number of frames to keep in history
-FRAME_SPACING = 50  # Spacing between frames in z-axis
+MAX_FRAMES = 5  # Maximum number of frames to keep in history
+FRAME_SPACING = 25  # Spacing between frames in z-axis
+
+# DCE Settings
+SHUTTER_TYPE = 'boxcar'  # or 'morlet'
+BOXCAR_PERIOD = 0.1      # seconds
+BOXCAR_DUTY = 0.25       # 25% duty cycle
+MORLET_FREQ = 100.0      # Hz
+MORLET_SIGMA = 0.01      # seconds
 
 # --- Digital Coded Exposure Functions ---
 def boxcar_shutter(t, period=0.1, duty=0.25, phase=0.0):
@@ -130,7 +138,7 @@ def stream_camera_data():
         running = False
 
 def process_events():
-    """Process events from buffer and return visualization data"""
+    """Process events from buffer and return visualization data with DCE applied"""
     global event_buffer, frame_buffer
     
     with data_lock:
@@ -139,7 +147,6 @@ def process_events():
             
         events_list = list(event_buffer)
         if len(event_buffer) >= BUFFER_CLEAR_SIZE:
-            # Create new frame and add to buffer
             frame = process_frame(events_list)
             frame_buffer.append(frame)
             event_buffer.clear()
@@ -147,25 +154,50 @@ def process_events():
     if len(events_list) == 0:
         return None, None
     
-    # Combine all frames into visualization data
-    all_points = []
-    all_colors = []
+    # Convert events to numpy arrays for efficient processing
+    events_array = np.array([(e['timestamp'], e['x'], e['y'], e['polarity']) 
+                            for e in events_list],
+                           dtype=[('timestamp', 'f8'), ('x', 'i4'), 
+                                 ('y', 'i4'), ('polarity', 'i4')])
     
-    # Add current frame points
-    current_frame = process_frame(events_list)
-    frame_points = np.column_stack((
-        current_frame['positions']['x'],
-        current_frame['positions']['y'],
-        np.zeros(len(current_frame['positions']))  # Current frame at z=0
+    # Normalize timestamps to seconds relative to the first event
+    t0 = events_array['timestamp'][0]
+    timestamps = (events_array['timestamp'] - t0) * 1e-6  # Convert microseconds to seconds
+    
+    # Apply DCE shutter function
+    if SHUTTER_TYPE == 'boxcar':
+        weights = np.array([boxcar_shutter(t, BOXCAR_PERIOD, BOXCAR_DUTY) 
+                          for t in timestamps])
+    else:  # morlet
+        weights = np.array([morlet_shutter(t, MORLET_FREQ, MORLET_SIGMA) 
+                          for t in timestamps])
+    
+    # Filter out events where weight is zero or very small
+    mask = weights > 0.01
+    if not np.any(mask):
+        return None, None
+    
+    # Create points array with weighted events
+    points = np.column_stack((
+        events_array['x'][mask],
+        events_array['y'][mask],
+        np.zeros_like(events_array['x'][mask])
     ))
-    frame_colors = np.zeros((len(current_frame['polarities']), 4))
-    frame_colors[current_frame['polarities'] == 0] = [1.0, 0.0, 0.0, 0.8]
-    frame_colors[current_frame['polarities'] == 1] = [0.0, 1.0, 0.0, 0.8]
     
-    all_points.append(frame_points)
-    all_colors.append(frame_colors)
+    # Create colors with alpha channel modulated by weights
+    colors = np.zeros((len(points), 4))
+    polarities = events_array['polarity'][mask]
+    weights_masked = weights[mask]
     
-    # Add historical frames
+    # Red for polarity 0, Green for polarity 1, with weighted alpha
+    colors[polarities == 0] = [1.0, 0.0, 0.0, 0.8]
+    colors[polarities == 1] = [0.0, 1.0, 0.0, 0.8]
+    colors[:, 3] *= weights_masked  # Modify alpha channel by weights
+    
+    all_points = [points]
+    all_colors = [colors]
+    
+    # Add historical frames with decreasing alpha
     for z_index, frame in enumerate(frame_buffer, start=1):
         frame_points = np.column_stack((
             frame['positions']['x'],
@@ -176,6 +208,8 @@ def process_events():
         frame_colors = np.zeros((len(frame['polarities']), 4))
         frame_colors[frame['polarities'] == 0] = [1.0, 0.0, 0.0, 0.8]
         frame_colors[frame['polarities'] == 1] = [0.0, 1.0, 0.0, 0.8]
+        # Reduce alpha for older frames
+        frame_colors[:, 3] *= 0.8 ** z_index
         
         all_points.append(frame_points)
         all_colors.append(frame_colors)
