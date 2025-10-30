@@ -5,3 +5,6 @@ PyQt6
 
 # DVXplorer camera support
 dv-processing
+
+# Video and image processing
+opencv-python
