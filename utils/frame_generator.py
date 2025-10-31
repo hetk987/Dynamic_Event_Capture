@@ -10,7 +10,8 @@ class FrameGenerator:
     
     def __init__(self, width, height, fps=30, 
                  shutter_type='boxcar', period=0.1, duty=0.25,
-                 morlet_freq=100.0, morlet_sigma=0.01):
+
+                 morlet_freq=100.0, morlet_sigma=0.01, brightness=1.0, decay_rate=1.0):
         """
         Initialize frame generator
         
@@ -23,11 +24,14 @@ class FrameGenerator:
             duty: Duty cycle for boxcar shutter (0-1)
             morlet_freq: Frequency for Morlet wavelet (Hz)
             morlet_sigma: Sigma parameter for Morlet wavelet (seconds)
+            brightness: Brightness multiplier (1.0 = normal, >1.0 = brighter)
         """
         self.width = width
         self.height = height
         self.fps = fps
         self.frame_interval = 1.0 / fps  # seconds per frame
+        self.brightness = brightness
+        self.decay_rate = decay_rate
         
         # Initialize event processor
         self.processor = EventProcessor(
@@ -44,7 +48,10 @@ class FrameGenerator:
         
     def reset_frame(self):
         """Reset the current frame buffer"""
-        self.frame.fill(0)
+        if self.decay_rate < 1.0:
+            self.frame *= self.decay_rate
+        else:
+            self.frame.fill(0)
         self.event_count = 0
     
     def add_events(self, timestamps_us, x_coords, y_coords, polarities):
@@ -63,8 +70,8 @@ class FrameGenerator:
         if len(timestamps_us) == 0:
             return 0
         
-        # Convert timestamps to seconds
-        timestamps_s, t0 = self.processor.convert_timestamps_to_seconds(timestamps_us)
+        # Convert timestamps to seconds (keep absolute time for DCE shutter)
+        timestamps_s = timestamps_us * 1e-6
         
         # Apply DCE shutter function
         weights = self.processor.apply_shutter(timestamps_s)
@@ -85,18 +92,21 @@ class FrameGenerator:
         valid_x = np.clip(valid_x, 0, self.width - 1)
         valid_y = np.clip(valid_y, 0, self.height - 1)
         
-        # Accumulate events into frame
+        # Accumulate events into frame using signed polarity for DCE
         for i in range(len(valid_x)):
             x, y = int(valid_x[i]), int(valid_y[i])
             polarity = valid_polarities[i]
             weight = valid_weights[i]
             
-            # Add weighted contribution
-            # Polarity 0 = Red, Polarity 1 = Green
-            if polarity == 0:
-                self.frame[y, x, 2] += weight  # Red channel
+            # Map polarity to ±1 and apply shutter weight (as in Plot_wDCE.py)
+            polarity_signed = 1.0 if polarity > 0 else -1.0
+            weighted_polarity = polarity_signed * weight
+            
+            # Positive weighted polarity = Green, Negative = Red
+            if weighted_polarity > 0:
+                self.frame[y, x, 1] += weighted_polarity  # Green channel
             else:
-                self.frame[y, x, 1] += weight  # Green channel
+                self.frame[y, x, 2] += abs(weighted_polarity)  # Red channel
         
         self.event_count += len(valid_x)
         return len(valid_x)
@@ -116,11 +126,11 @@ class FrameGenerator:
         if normalize:
             # Normalize to 0-255 range
             if frame.max() > 0:
-                frame = (frame / frame.max() * 255).astype(np.uint8)
+                frame = (frame / frame.max() * 255 * self.brightness).astype(np.uint8)
             else:
                 frame = frame.astype(np.uint8)
         else:
-            frame = np.clip(frame, 0, 255).astype(np.uint8)
+            frame = np.clip(frame * self.brightness, 0, 255).astype(np.uint8)
         
         return frame
     

@@ -32,15 +32,17 @@ from utils.video_writer import VideoWriter
 # Configuration
 INPUT_SOURCE = 'camera'  # 'camera' or 'file'
 FILE_PATH = './data/dvSave-2025_10_22_18_42_06.aedat4'
-FPS = 15
+FPS = 30
 ENABLE_MP4_RECORDING = False
-OUTPUT_PATH = './output/recording.mp4'
-SHUTTER_TYPE = 'no_shutter' # 'boxcar', 'morlet', 'no_shutter'
+OUTPUT_PATH = './output/with_decay_recording(7).mp4'
+SHUTTER_TYPE = 'boxcar' # 'boxcar', 'morlet', 'no_shutter'
 BOXCAR_PERIOD = 0.1
 BOXCAR_DUTY = 0.25
+BRIGHTNESS = 3.0  # Brightness multiplier (1.0 = normal, >1.0 = brighter, <1.0 = darker)
+DECAY_RATE = 0.75  # Frame persistence decay (1.0 = no decay, 0.95 = 5% fade per frame)
 
 # Camera settings
-DOWNSAMPLING = 50
+DOWNSAMPLING = 10
 BUFFER_SIZE = 50000
 
 # Global data buffers and flags
@@ -140,24 +142,44 @@ def read_file_data(file_path):
             
             print(f"Total events in file: {len(events)}")
             
-            # Add events to buffer in chunks
-            chunk_size = 10000
-            for i in range(0, len(events), chunk_size):
+            # Add events to buffer in temporal chunks
+            chunk_duration_us = 33000  # 33ms chunks for 30fps playback
+            start_time_us = events[0]['timestamp'] if len(events) > 0 else 0
+            current_chunk_start_us = start_time_us
+            
+            events_added = 0
+            last_report_time = time.time()
+            
+            for event in events:
                 if not running:
                     break
                 
-                chunk = events[i:i+chunk_size]
+                # When we've accumulated a temporal chunk, wait before adding more
+                if event['timestamp'] >= current_chunk_start_us + chunk_duration_us:
+                    # Calculate how much real time this chunk should take
+                    chunk_time_us = event['timestamp'] - current_chunk_start_us
+                    chunk_time_s = chunk_time_us * 1e-6
+                    
+                    # Sleep only if the chunk time is reasonable
+                    if 0.001 <= chunk_time_s <= 0.1:  # Between 1ms and 100ms
+                        time.sleep(chunk_time_s)
+                    
+                    current_chunk_start_us = event['timestamp']
                 
                 with data_lock:
-                    for event in chunk:
-                        event_buffer.append({
-                            'timestamp': event['timestamp'],
-                            'x': event['x'],
-                            'y': event['y'],
-                            'polarity': event['polarity']
-                        })
+                    event_buffer.append({
+                        'timestamp': event['timestamp'],
+                        'x': event['x'],
+                        'y': event['y'],
+                        'polarity': event['polarity']
+                    })
                 
-                time.sleep(0.01)  # Small delay to simulate real-time
+                events_added += 1
+                
+                # Progress report
+                if time.time() - last_report_time >= 1.0:
+                    print(f"Loaded {events_added}/{len(events)} events")
+                    last_report_time = time.time()
         
         print("Finished reading file")
         
@@ -169,7 +191,7 @@ def read_file_data(file_path):
 def main():
     """Main function"""
     global INPUT_SOURCE, FILE_PATH, FPS, ENABLE_MP4_RECORDING, OUTPUT_PATH
-    global SHUTTER_TYPE, BOXCAR_PERIOD, BOXCAR_DUTY, event_buffer, running
+    global SHUTTER_TYPE, BOXCAR_PERIOD, BOXCAR_DUTY, BRIGHTNESS, DECAY_RATE, event_buffer, running
     
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Frame-based Event Camera Capture with DCE')
@@ -191,6 +213,10 @@ def main():
                        help='Period for boxcar shutter (seconds)')
     parser.add_argument('--duty', type=float, default=BOXCAR_DUTY, 
                        help='Duty cycle for boxcar shutter (0-1)')
+    parser.add_argument('--brightness', type=float, default=BRIGHTNESS,
+                       help='Brightness multiplier (1.0 = normal, >1.0 = brighter)')
+    parser.add_argument('--decay-rate', type=float, default=DECAY_RATE,
+                       help='Frame persistence decay (1.0 = no decay, 0.95 = 5%% fade per frame)')
     
     args = parser.parse_args()
     
@@ -203,6 +229,8 @@ def main():
     SHUTTER_TYPE = args.shutter
     BOXCAR_PERIOD = args.period
     BOXCAR_DUTY = args.duty
+    BRIGHTNESS = args.brightness
+    DECAY_RATE = args.decay_rate
     
     # Start data streaming thread
     if INPUT_SOURCE == 'camera':
@@ -258,7 +286,9 @@ def main():
             fps=FPS,
             shutter_type=SHUTTER_TYPE,
             period=BOXCAR_PERIOD,
-            duty=BOXCAR_DUTY
+            duty=BOXCAR_DUTY,
+            brightness=BRIGHTNESS,
+            decay_rate=DECAY_RATE
         )
         frame_gen_no_dce = FrameGenerator(
             width=width,
@@ -266,7 +296,9 @@ def main():
             fps=FPS,
             shutter_type='no_shutter',
             period=BOXCAR_PERIOD,
-            duty=BOXCAR_DUTY
+            duty=BOXCAR_DUTY,
+            brightness=BRIGHTNESS,
+            decay_rate=DECAY_RATE
         )
         video_writer = None
         video_writer_dce = None
@@ -284,7 +316,9 @@ def main():
             fps=FPS,
             shutter_type=SHUTTER_TYPE,
             period=BOXCAR_PERIOD,
-            duty=BOXCAR_DUTY
+            duty=BOXCAR_DUTY,
+            brightness=BRIGHTNESS,
+            decay_rate=DECAY_RATE
         )
         
         # Initialize video writer if enabled
@@ -311,6 +345,9 @@ def main():
     print(f"Shutter: {SHUTTER_TYPE}")
     if SHUTTER_TYPE == 'boxcar':
         print(f"Period: {BOXCAR_PERIOD}s, Duty: {BOXCAR_DUTY}")
+    print(f"Brightness: {BRIGHTNESS}x")
+    if DECAY_RATE < 1.0:
+        print(f"Decay Rate: {DECAY_RATE}")
     
     if comparison_mode:
         print("Recording comparison videos:")

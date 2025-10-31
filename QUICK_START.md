@@ -65,6 +65,25 @@ This creates:
 
 **Note**: Comparison mode disables the display window for maximum performance.
 
+### Adjust Brightness
+
+Increase the brightness of event dots:
+
+```bash
+python frame_based_capture.py \
+    --source file \
+    --file ./data/dvSave-2025_10_22_18_42_06.aedat4 \
+    --record \
+    --output ./output/bright.mp4 \
+    --brightness 2.0
+```
+
+Brightness values:
+- `1.0` = normal brightness (default)
+- `2.0` = twice as bright
+- `3.0` = three times as bright
+- etc.
+
 ## Controls
 
 - **'q'**: Quit the application
@@ -127,5 +146,6 @@ pip install opencv-python
 | `--shutter`           | `boxcar`, `morlet`, `no_shutter` | `boxcar`                                   |
 | `--period`            | Float (seconds)                  | `0.1`                                      |
 | `--duty`              | Float (0-1)                      | `0.25`                                     |
+| `--brightness`        | Float                            | `1.0`                                      |
 
 See `FRAME_BASED_README.md` for detailed documentation.

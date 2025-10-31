@@ -82,6 +82,21 @@ This creates:
 | `--shutter`           | Shutter function type: 'boxcar', 'morlet', or 'no_shutter' | boxcar                                   |
 | `--period`            | Period for boxcar shutter (seconds)                        | 0.1                                      |
 | `--duty`              | Duty cycle for boxcar shutter (0-1)                        | 0.25                                     |
+| `--brightness`        | Brightness multiplier (1.0 = normal, >1.0 = brighter)     | 1.0                                      |
+
+### Adjust Brightness
+
+Increase the brightness of event dots by using the `--brightness` parameter:
+
+```bash
+python frame_based_capture.py --source file --file ./data/dvSave-2025_10_22_18_39_29.aedat4 \
+    --record --output ./output/bright.mp4 --brightness 2.0
+```
+
+- `1.0` = normal brightness (default)
+- `2.0` = twice as bright
+- `3.0` = three times as bright
+- Higher values make events more visible
 
 ## Architecture
 
