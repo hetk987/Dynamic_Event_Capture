@@ -69,7 +69,7 @@ def main():
         print("\nStep 3: Test camera connection")
         print("In another terminal, run:")
         print("source .venv311/bin/activate")
-        print("python test_camera.py")
+        print("python tests/test_camera.py")
         
         print("\nPress Ctrl+C to stop DV Viewer when done testing")
         

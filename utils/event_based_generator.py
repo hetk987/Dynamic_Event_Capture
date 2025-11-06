@@ -1,35 +1,34 @@
 """
-FrameGenerator: Creates 2D frames from events using time-based buffering
+EventBasedFrameGenerator: Creates 2D frames from events using event-count-based buffering
 """
 import numpy as np
 from .event_processor import EventProcessor
 
 
-class FrameGenerator:
-    """Generate 30fps frames from event data using time-based buffering"""
+class EventBasedFrameGenerator:
+    """Generate frames from event data using event-count-based buffering"""
     
-    def __init__(self, width, height, fps=30, 
+    def __init__(self, width, height, events_per_frame=10000,
                  shutter_type='boxcar', period=0.1, duty=0.25,
-
                  morlet_freq=100.0, morlet_sigma=0.01, brightness=1.0, decay_rate=1.0):
         """
-        Initialize frame generator
+        Initialize event-based frame generator
         
         Args:
             width: Frame width in pixels
             height: Frame height in pixels
-            fps: Target frames per second
+            events_per_frame: Number of events to accumulate before generating a frame
             shutter_type: 'boxcar' or 'morlet' shutter function
             period: Period for boxcar shutter (seconds)
             duty: Duty cycle for boxcar shutter (0-1)
             morlet_freq: Frequency for Morlet wavelet (Hz)
             morlet_sigma: Sigma parameter for Morlet wavelet (seconds)
             brightness: Brightness multiplier (1.0 = normal, >1.0 = brighter)
+            decay_rate: Frame persistence decay (1.0 = no decay, 0.95 = 5% fade per frame)
         """
         self.width = width
         self.height = height
-        self.fps = fps
-        self.frame_interval = 1.0 / fps  # seconds per frame
+        self.events_per_frame = events_per_frame
         self.brightness = brightness
         self.decay_rate = decay_rate
         
@@ -45,6 +44,7 @@ class FrameGenerator:
         # Initialize frame buffer
         self.frame = np.zeros((height, width, 3), dtype=np.float32)
         self.event_count = 0
+        self.total_events_added = 0
         
     def reset_frame(self, decay_override=None):
         """
@@ -77,10 +77,12 @@ class FrameGenerator:
             polarities: Array of polarity values (0 or 1)
         
         Returns:
-            Number of events added
+            Tuple of (events_added, should_generate_frame)
+            - events_added: Number of events actually added
+            - should_generate_frame: True if event threshold reached
         """
         if len(timestamps_us) == 0:
-            return 0
+            return 0, False
         
         # Convert timestamps to seconds (keep absolute time for DCE shutter)
         timestamps_s = timestamps_us * 1e-6
@@ -92,7 +94,7 @@ class FrameGenerator:
         mask = weights > 0.01
         
         if not np.any(mask):
-            return 0
+            return 0, False
         
         # Get valid events
         valid_x = x_coords[mask]
@@ -120,8 +122,14 @@ class FrameGenerator:
             else:
                 self.frame[y, x, 2] += abs(weighted_polarity)  # Red channel
         
-        self.event_count += len(valid_x)
-        return len(valid_x)
+        events_added = len(valid_x)
+        self.event_count += events_added
+        self.total_events_added += events_added
+        
+        # Check if we've reached the threshold
+        should_generate_frame = self.event_count >= self.events_per_frame
+        
+        return events_added, should_generate_frame
     
     def get_frame(self, normalize=True):
         """
@@ -149,4 +157,12 @@ class FrameGenerator:
     def get_event_count(self):
         """Get the number of events in the current frame"""
         return self.event_count
+    
+    def get_total_events_added(self):
+        """Get the total number of events added since initialization"""
+        return self.total_events_added
+    
+    def set_events_per_frame(self, events_per_frame):
+        """Update the events-per-frame threshold"""
+        self.events_per_frame = events_per_frame
 

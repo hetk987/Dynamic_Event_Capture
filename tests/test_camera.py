@@ -73,7 +73,7 @@ def test_camera_connection():
             print("\n⚠ Camera connected but no events received")
             print("\nThis is normal for event cameras when there's no movement!")
             print("Event cameras only generate data when pixels detect changes.")
-            print("\nThe camera is working - you can run Plot_wDCE.py now.")
+            print("\nThe camera is working - you can run frame_based_capture.py now.")
             print("Just make sure to move things in front of the camera to see events.")
             return True
             
@@ -93,7 +93,7 @@ if __name__ == "__main__":
     success = test_camera_connection()
     
     if success:
-        print("\n✓ Camera test passed! You can now run Plot_wDCE.py")
+        print("\n✓ Camera test passed! You can now run frame_based_capture.py")
     else:
         print("\n✗ Camera test failed. Please fix the issues above.")
         sys.exit(1)

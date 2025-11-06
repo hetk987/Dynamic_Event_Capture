@@ -27,19 +27,20 @@ except ImportError:
 
 from utils.frame_generator import FrameGenerator
 from utils.video_writer import VideoWriter
+from utils.adaptive_decay import AdaptiveDecayController
 
 
 # Configuration
 INPUT_SOURCE = 'camera'  # 'camera' or 'file'
 FILE_PATH = './data/dvSave-2025_10_22_18_42_06.aedat4'
 FPS = 30
-ENABLE_MP4_RECORDING = False
-OUTPUT_PATH = './output/with_decay_recording(7).mp4'
-SHUTTER_TYPE = 'boxcar' # 'boxcar', 'morlet', 'no_shutter'
+ENABLE_MP4_RECORDING = True
+OUTPUT_PATH = './output/no_light_recording.mp4'
+SHUTTER_TYPE = 'no_shutter' # 'boxcar', 'morlet', 'no_shutter'
 BOXCAR_PERIOD = 0.1
 BOXCAR_DUTY = 0.25
 BRIGHTNESS = 3.0  # Brightness multiplier (1.0 = normal, >1.0 = brighter, <1.0 = darker)
-DECAY_RATE = 0.75  # Frame persistence decay (1.0 = no decay, 0.95 = 5% fade per frame)
+DECAY_RATE = 0.5  # Frame persistence decay (1.0 = no decay, 0.95 = 5% fade per frame)
 
 # Camera settings
 DOWNSAMPLING = 10
@@ -202,7 +203,7 @@ def main():
     parser.add_argument('--fps', type=int, default=FPS, 
                        help='Target frames per second')
     parser.add_argument('--record', action='store_true', 
-                       help='Enable MP4 recording')
+                       help='Enable MP4 recording', default=ENABLE_MP4_RECORDING)
     parser.add_argument('--record-comparison', action='store_true',
                        help='Record two videos: one with DCE and one without for comparison')
     parser.add_argument('--output', type=str, default=OUTPUT_PATH, 
@@ -217,6 +218,20 @@ def main():
                        help='Brightness multiplier (1.0 = normal, >1.0 = brighter)')
     parser.add_argument('--decay-rate', type=float, default=DECAY_RATE,
                        help='Frame persistence decay (1.0 = no decay, 0.95 = 5%% fade per frame)')
+    parser.add_argument('--min-decay', type=float, default=0.999999,
+                       help='Minimum decay rate for low activity/static scenes')
+    parser.add_argument('--max-decay', type=float, default=0.25,
+                       help='Maximum decay rate for high activity/motion')
+    parser.add_argument('--low-activity', type=int, default=5000,
+                       help='Activity threshold below which decay is minimized')
+    parser.add_argument('--high-activity', type=int, default=40000,
+                       help='Activity threshold above which decay is maximized')
+    parser.add_argument('--decay-alpha', type=float, default=0.2,
+                       help='Smoothing factor for decay transitions (0-1, lower = smoother)')
+    parser.add_argument('--decay-hysteresis', type=float, default=0.05,
+                       help='Minimum change required to update decay (prevents flicker)')
+    parser.add_argument('--enable-adaptive-decay', action='store_true',
+                       help='Enable adaptive decay based on scene activity')
     
     args = parser.parse_args()
     
@@ -231,6 +246,19 @@ def main():
     BOXCAR_DUTY = args.duty
     BRIGHTNESS = args.brightness
     DECAY_RATE = args.decay_rate
+    ENABLE_ADAPTIVE_DECAY = args.enable_adaptive_decay
+    
+    # Initialize adaptive decay controller if enabled
+    decay_ctrl = None
+    if ENABLE_ADAPTIVE_DECAY:
+        decay_ctrl = AdaptiveDecayController(
+            min_decay=args.min_decay,
+            max_decay=args.max_decay,
+            low_thresh=args.low_activity,
+            high_thresh=args.high_activity,
+            alpha=args.decay_alpha,
+            hysteresis=args.decay_hysteresis
+        )
     
     # Start data streaming thread
     if INPUT_SOURCE == 'camera':
@@ -361,6 +389,10 @@ def main():
         if ENABLE_MP4_RECORDING:
             print(f"Output: {OUTPUT_PATH}")
         print("Press 'q' to quit")
+    if ENABLE_ADAPTIVE_DECAY:
+        print(f"Adaptive Decay: ON (min={args.min_decay}, max={args.max_decay})")
+    else:
+        print(f"Adaptive Decay: OFF (decay={DECAY_RATE})")
     print("=" * 60 + "\n")
     
     frame_interval = 1.0 / FPS
@@ -408,6 +440,16 @@ def main():
                                     polarities[mask]
                                 )
                                 
+                                # Compute adaptive decay if enabled (use total events for both)
+                                num_added_total = max(num_added_dce, num_added_no_dce)
+                                buffer_size = len(event_buffer)
+                                decay_override = None
+                                if ENABLE_ADAPTIVE_DECAY and decay_ctrl:
+                                    decay_override = decay_ctrl.activity_to_decay(
+                                        events_this_frame=num_added_total,
+                                        buffer_len=buffer_size
+                                    )
+                                
                                 if num_added_dce > 0 or num_added_no_dce > 0:
                                     # Generate both frames
                                     frame_dce = frame_gen_dce.get_frame()
@@ -420,17 +462,17 @@ def main():
                                     frame_counter += 1
                                     
                                     if frame_counter % 30 == 0:
-                                        buffer_size = len(event_buffer)
-                                        print(f"Frame {frame_counter}: Events in buffer: {buffer_size}")
+                                        decay_str = f", decay={decay_override:.3f}" if decay_override else ""
+                                        print(f"Frame {frame_counter}: Events in buffer: {buffer_size}{decay_str}")
                                 
                                 # Remove processed events
                                 num_to_remove = np.sum(mask)
                                 for _ in range(num_to_remove):
                                     event_buffer.popleft()
                                 
-                                # Reset both frame buffers
-                                frame_gen_dce.reset_frame()
-                                frame_gen_no_dce.reset_frame()
+                                # Reset both frame buffers with same decay
+                                frame_gen_dce.reset_frame(decay_override=decay_override)
+                                frame_gen_no_dce.reset_frame(decay_override=decay_override)
                             else:
                                 # Normal mode: single video with optional display
                                 num_added = frame_gen.add_events(
@@ -439,6 +481,15 @@ def main():
                                     y_coords[mask],
                                     polarities[mask]
                                 )
+                                
+                                # Compute adaptive decay if enabled
+                                buffer_size = len(event_buffer)
+                                decay_override = None
+                                if ENABLE_ADAPTIVE_DECAY and decay_ctrl:
+                                    decay_override = decay_ctrl.activity_to_decay(
+                                        events_this_frame=num_added,
+                                        buffer_len=buffer_size
+                                    )
                                 
                                 if num_added > 0:
                                     # Generate and display frame
@@ -454,16 +505,16 @@ def main():
                                     frame_counter += 1
                                     
                                     if frame_counter % 30 == 0:
-                                        buffer_size = len(event_buffer)
-                                        print(f"Frame {frame_counter}: Events in buffer: {buffer_size}")
+                                        decay_str = f", decay={decay_override:.3f}" if decay_override else ""
+                                        print(f"Frame {frame_counter}: Events in buffer: {buffer_size}{decay_str}")
                                 
                                 # Remove processed events
                                 num_to_remove = np.sum(mask)
                                 for _ in range(num_to_remove):
                                     event_buffer.popleft()
                                 
-                                # Reset frame buffer
-                                frame_gen.reset_frame()
+                                # Reset frame buffer with adaptive decay
+                                frame_gen.reset_frame(decay_override=decay_override)
             
             last_frame_time = current_time
         
