@@ -25,7 +25,7 @@ from utils.event_based_generator import EventBasedFrameGenerator
 
 
 # Configuration
-FILE_PATH = './data/dvSave-2025_10_22_18_42_06.aedat4'
+FILE_PATH = './data/dvSave-2025_11_12_20_21_55.aedat4'
 FPS = 30
 EVENTS_PER_FRAME = 10000
 OUTPUT_DIR = './output/'
@@ -34,7 +34,7 @@ SHUTTER_TYPE = 'boxcar'
 BOXCAR_PERIOD = 0.1
 BOXCAR_DUTY = 0.25
 BRIGHTNESS = 3.0
-DECAY_RATE = 0.5
+DECAY_RATE = 0.0
 
 
 def save_frame_jpeg(frame, output_path, quality=85):

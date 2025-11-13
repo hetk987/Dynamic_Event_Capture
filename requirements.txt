@@ -8,3 +8,5 @@ dv-processing
 
 # Video and image processing
 opencv-python
+
+glfw

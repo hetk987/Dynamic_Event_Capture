@@ -6,10 +6,9 @@ Record events from camera or file to AEDAT4 format
 
 import argparse
 import cv2
-import threading
 import time
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import numpy as np
 
 # Try to import both camera libraries
@@ -28,63 +27,37 @@ except ImportError:
 
 # Configuration
 INPUT_SOURCE = 'camera'  # 'camera' or 'file'
-FILE_PATH = './data/dvSave-2025_10_22_18_42_06.aedat4'
+FILE_PATH = './data/test.aedat4'
 OUTPUT_DIR = './data/'
 ENABLE_PREVIEW = True
 PREVIEW_SCALE = 0.5  # Scale factor for preview window
+PREVIEW_DECAY = 0.50  # Decay rate per frame (0.98 = 2% fade per frame)
+PREVIEW_BRIGHTNESS = 10.0  # Brightness multiplier
+
+# Noise filtering configuration
+ENABLE_NOISE_FILTER = True  # Enable background activity noise filter (default: enabled)
+NOISE_FILTER_ACTIVITY_PERIOD_MS = 1.0  # Noise filter activity period in milliseconds (default: 1.0ms)
 
 # Camera settings
-DOWNSAMPLING = 10
+DOWNSAMPLING = 100  # Only used for preview visualization, NOT for recording
 BUFFER_SIZE = 50000
 
 # Global flags
 running = True
 camera_resolution = None
-preview_frame = None
-preview_lock = threading.Lock()
-
-
-def create_preview_frame(events_list, width, height):
-    """Create a simple preview frame from recent events"""
-    if len(events_list) == 0:
-        return None
-    
-    # Take last N events for preview
-    preview_events = list(events_list)[-10000:] if len(events_list) > 10000 else events_list
-    
-    # Create frame
-    frame = np.zeros((height, width, 3), dtype=np.uint8)
-    
-    for event in preview_events:
-        x = int(event['x'])
-        y = int(event['y'])
-        polarity = event['polarity']
-        
-        if 0 <= x < width and 0 <= y < height:
-            if polarity > 0:
-                frame[y, x, 1] = 255  # Green
-            else:
-                frame[y, x, 2] = 255  # Red
-    
-    return frame
-
-
-def update_preview(events_list, width, height):
-    """Update preview frame in separate thread"""
-    global preview_frame
-    
-    while running:
-        if len(events_list) > 0:
-            frame = create_preview_frame(events_list, width, height)
-            if frame is not None:
-                with preview_lock:
-                    preview_frame = frame
-        time.sleep(0.033)  # ~30fps preview update
 
 
 def record_from_camera(output_path):
-    """Record events from camera to AEDAT4 file"""
-    global running, camera_resolution
+    """
+    Record events from camera to AEDAT4 file with optional noise filtering.
+    
+    Args:
+        output_path: Path to output AEDAT4 file
+        
+    Returns:
+        bool: True if recording successful, False otherwise
+    """
+    global running, camera_resolution, ENABLE_NOISE_FILTER, NOISE_FILTER_ACTIVITY_PERIOD_MS
     
     if not DV_PROCESSING_AVAILABLE:
         print("Error: dv-processing not available. Install it with: pip install dv-processing")
@@ -105,86 +78,192 @@ def record_from_camera(output_path):
         
         width, height = camera_resolution
         
+        # Initialize noise filter if enabled
+        noise_filter = None
+        if ENABLE_NOISE_FILTER:
+            try:
+                activity_period = timedelta(milliseconds=NOISE_FILTER_ACTIVITY_PERIOD_MS)
+                noise_filter = dv.noise.BackgroundActivityNoiseFilter((width, height), activity_period)
+                print(f"Noise filter enabled (activity period: {NOISE_FILTER_ACTIVITY_PERIOD_MS}ms)")
+            except (AttributeError, ImportError, Exception) as e:
+                print(f"Warning: Noise filter not available ({e}). Recording without noise filtering.")
+                noise_filter = None
+                ENABLE_NOISE_FILTER = False
+        else:
+            print("Noise filter disabled")
+        
         print(f"Starting recording to: {output_path}")
         print("Press 'q' to stop recording")
         
-        # Create recorder
-        recorder = dv.io.MonoCameraWriter(output_path, capture.getCameraName())
+        # Create recorder - pass the capture object, not the camera name
+        recorder = dv.io.MonoCameraWriter(output_path, capture)
         
-        # Initialize preview if enabled
-        preview_thread = None
+        # Initialize preview frame accumulator (float for decay)
+        preview_frame = None
         if ENABLE_PREVIEW:
-            preview_events = []
-            preview_thread = threading.Thread(target=update_preview, args=(preview_events, width, height), daemon=True)
-            preview_thread.start()
-            
+            preview_frame = np.zeros((height, width, 3), dtype=np.float32)
             window_name = 'Recording Preview (Press q to stop)'
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(window_name, int(width * PREVIEW_SCALE), int(height * PREVIEW_SCALE))
         
-        event_count = 0
+        # Statistics tracking
+        raw_event_count = 0
+        filtered_event_count = 0
         start_time = time.time()
+        last_decay_time = time.time()
+        last_display_time = time.time()
+        decay_interval = 0.016  # Apply decay every ~16ms (60Hz decay)
+        display_interval = 0.033  # Update display every ~33ms (30fps)
         
         while running:
             events = capture.getNextEventBatch()
+            current_time = time.time()
             
             if events is not None and len(events) > 0:
-                # Write events to recorder
-                recorder.writeEvents(events)
+                # Track raw events
+                raw_event_count += len(events)
                 
-                event_count += len(events)
+                # Filter events if noise filter is enabled
+                if noise_filter is not None:
+                    try:
+                        # Pass events to filter
+                        noise_filter.accept(events)
+                        # Get filtered events (may return empty if filter is still processing)
+                        filtered_events = noise_filter.generateEvents()
+                        # Record filtered events (even if empty - filter may buffer internally)
+                        if len(filtered_events) > 0:
+                            recorder.writeEvents(filtered_events)
+                            filtered_event_count += len(filtered_events)
+                        # Note: Filter may buffer some events internally for analysis.
+                        # Remaining events will be flushed at the end of recording.
+                    except Exception as e:
+                        # If filtering fails, record raw events
+                        print(f"Warning: Noise filter error ({e}), recording raw events")
+                        recorder.writeEvents(events)
+                        filtered_event_count += len(events)
+                else:
+                    # Record raw events (no filtering) - ALL events are written directly
+                    recorder.writeEvents(events)
+                    filtered_event_count += len(events)
                 
-                # Update preview
-                if ENABLE_PREVIEW and preview_thread:
-                    events_np = events.numpy()
-                    if len(events_np) > DOWNSAMPLING:
-                        events_np = events_np[::DOWNSAMPLING]
-                    
-                    for event in events_np:
-                        preview_events.append({
-                            'timestamp': event['timestamp'],
-                            'x': event['x'],
-                            'y': event['y'],
-                            'polarity': event['polarity']
-                        })
-                    
-                    # Keep preview buffer size manageable
-                    if len(preview_events) > 50000:
-                        preview_events = preview_events[-50000:]
+                # Use filtered_event_count for progress reporting
+                event_count = filtered_event_count
                 
-                # Display preview
+                # Add new events to preview frame
                 if ENABLE_PREVIEW:
-                    with preview_lock:
-                        if preview_frame is not None:
-                            preview_scaled = cv2.resize(preview_frame, 
-                                                       (int(width * PREVIEW_SCALE), 
-                                                        int(height * PREVIEW_SCALE)))
-                            cv2.imshow(window_name, preview_scaled)
+                    events_np = events.numpy()
                     
-                    key = cv2.waitKey(1) & 0xFF
-                    if key == ord('q'):
-                        print("Stop requested")
-                        running = False
+                    # Clip coordinates to valid range
+                    x_coords = np.clip(events_np['x'], 0, width - 1).astype(int)
+                    y_coords = np.clip(events_np['y'], 0, height - 1).astype(int)
+                    polarities = events_np['polarity']
+                    
+                    # Add events directly to frame (positive = green, negative = red)
+                    for i in range(len(x_coords)):
+                        x, y = x_coords[i], y_coords[i]
+                        if polarities[i] > 0:
+                            preview_frame[y, x, 1] = min(preview_frame[y, x, 1] + PREVIEW_BRIGHTNESS * 50, 255.0)
+                        else:
+                            preview_frame[y, x, 2] = min(preview_frame[y, x, 2] + PREVIEW_BRIGHTNESS * 50, 255.0)
                 
-                # Progress report
+                # Progress report with statistics
                 elapsed = time.time() - start_time
-                if event_count % 100000 == 0:
-                    rate = event_count / elapsed if elapsed > 0 else 0
-                    print(f"Recorded {event_count} events ({rate:.0f} events/sec)")
+                if filtered_event_count % 100000 == 0:
+                    rate = filtered_event_count / elapsed if elapsed > 0 else 0
+                    if noise_filter is not None and raw_event_count > 0:
+                        reduction_factor = filtered_event_count / raw_event_count
+                        percentage_filtered = (1.0 - reduction_factor) * 100.0
+                        print(f"Recorded {filtered_event_count:,} events ({rate:.0f} events/sec) | "
+                              f"Raw: {raw_event_count:,} | "
+                              f"({percentage_filtered:.1f}% noise removed)")
+                    else:
+                        print(f"Recorded {filtered_event_count:,} events ({rate:.0f} events/sec)")
+            
+            # Apply decay and update display periodically
+            if ENABLE_PREVIEW:
+                # Apply decay based on time elapsed
+                time_since_decay = current_time - last_decay_time
+                if time_since_decay >= decay_interval:
+                    # Calculate decay factor based on actual time elapsed
+                    decay_factor = PREVIEW_DECAY ** (time_since_decay / decay_interval)
+                    preview_frame *= decay_factor
+                    last_decay_time = current_time
+                
+                # Update display periodically
+                time_since_display = current_time - last_display_time
+                if time_since_display >= display_interval:
+                    # Convert to uint8
+                    display_frame = np.clip(preview_frame, 0, 255).astype(np.uint8)
+                    
+                    # Resize for display
+                    preview_scaled = cv2.resize(display_frame, 
+                                               (int(width * PREVIEW_SCALE), 
+                                                int(height * PREVIEW_SCALE)))
+                    cv2.imshow(window_name, preview_scaled)
+                    last_display_time = current_time
+                
+                # Always check for key presses
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    print("Stop requested")
+                    running = False
             
             time.sleep(0.001)
         
-        # Close recorder
-        recorder.close()
+        # Flush any remaining filtered events from the noise filter
+        # The filter may buffer events internally for analysis - ensure all are written
+        if noise_filter is not None:
+            try:
+                # Call generateEvents() multiple times to ensure all buffered events are retrieved
+                # Some filters may return events in chunks, so we keep calling until empty
+                total_flushed = 0
+                max_flush_attempts = 10  # Prevent infinite loop
+                for attempt in range(max_flush_attempts):
+                    remaining_events = noise_filter.generateEvents()
+                    if len(remaining_events) > 0:
+                        recorder.writeEvents(remaining_events)
+                        filtered_event_count += len(remaining_events)
+                        total_flushed += len(remaining_events)
+                    else:
+                        break  # No more events to flush
+                
+                if total_flushed > 0:
+                    print(f"Flushed {total_flushed:,} remaining filtered events from buffer")
+            except Exception as e:
+                print(f"Warning: Error flushing noise filter ({e})")
+        
+        # Cleanup - MonoCameraWriter uses RAII and will finalize the file when destroyed
+        # Ensure all events are written by explicitly deleting the recorder
+        # The AEDAT4 file will contain all events written up to this point
+        del recorder
         
         if ENABLE_PREVIEW:
             cv2.destroyAllWindows()
         
         elapsed = time.time() - start_time
         print(f"\nRecording complete!")
-        print(f"Total events: {event_count}")
         print(f"Duration: {elapsed:.2f} seconds")
-        print(f"Average rate: {event_count/elapsed:.0f} events/sec")
+        
+        # Display statistics
+        if noise_filter is not None and raw_event_count > 0:
+            reduction_factor = filtered_event_count / raw_event_count
+            percentage_filtered = (1.0 - reduction_factor) * 100.0
+            events_removed = raw_event_count - filtered_event_count
+            print(f"Raw events received: {raw_event_count:,}")
+            print(f"Filtered events recorded: {filtered_event_count:,}")
+            print(f"Events removed (noise): {events_removed:,} ({percentage_filtered:.1f}%)")
+            print(f"Reduction factor: {reduction_factor:.3f}")
+            if hasattr(noise_filter, 'getReductionFactor'):
+                try:
+                    filter_reduction = noise_filter.getReductionFactor()
+                    print(f"Filter reduction factor: {filter_reduction:.3f}")
+                except:
+                    pass
+            print(f"Average rate: {filtered_event_count/elapsed:.0f} events/sec (filtered)")
+        else:
+            print(f"Total events: {filtered_event_count:,}")
+            print(f"Average rate: {filtered_event_count/elapsed:.0f} events/sec")
+        
         print(f"Saved to: {output_path}")
         
         return True
@@ -221,6 +300,7 @@ def copy_file_to_output(input_path, output_path):
 def main():
     """Main function"""
     global INPUT_SOURCE, FILE_PATH, OUTPUT_DIR, ENABLE_PREVIEW, running
+    global ENABLE_NOISE_FILTER, NOISE_FILTER_ACTIVITY_PERIOD_MS
     
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Record events to AEDAT4 file')
@@ -232,6 +312,10 @@ def main():
                        help='Output directory for recorded files')
     parser.add_argument('--no-preview', action='store_true',
                        help='Disable preview window')
+    parser.add_argument('--no-noise-filter', action='store_true',
+                       help='Disable background activity noise filter (default: enabled)')
+    parser.add_argument('--noise-filter-period', type=float, default=NOISE_FILTER_ACTIVITY_PERIOD_MS,
+                       help=f'Noise filter activity period in milliseconds (default: {NOISE_FILTER_ACTIVITY_PERIOD_MS})')
     
     args = parser.parse_args()
     
@@ -239,6 +323,8 @@ def main():
     FILE_PATH = args.file
     OUTPUT_DIR = args.output_dir
     ENABLE_PREVIEW = not args.no_preview
+    ENABLE_NOISE_FILTER = not args.no_noise_filter
+    NOISE_FILTER_ACTIVITY_PERIOD_MS = args.noise_filter_period
     
     # Create output directory if needed
     if not os.path.exists(OUTPUT_DIR):
@@ -257,6 +343,11 @@ def main():
         print(f"Input file: {FILE_PATH}")
     print(f"Output: {output_path}")
     print(f"Preview: {'ON' if ENABLE_PREVIEW else 'OFF'}")
+    print(f"Noise filter: {'ON' if ENABLE_NOISE_FILTER else 'OFF'}", end='')
+    if ENABLE_NOISE_FILTER:
+        print(f" (activity period: {NOISE_FILTER_ACTIVITY_PERIOD_MS}ms)")
+    else:
+        print()
     print("=" * 60 + "\n")
     
     success = False
