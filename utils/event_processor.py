@@ -83,14 +83,18 @@ class EventProcessor:
         Returns:
             Array of weights corresponding to each timestamp
         """
+        # Convert to numpy array if not already
+        timestamps = np.asarray(timestamps)
+        
         if self.shutter_type == 'boxcar':
-            return np.array([self.boxcar_shutter(t, self.period, self.duty, phase) 
-                            for t in timestamps])
+            # Pass entire array directly - boxcar_shutter handles arrays
+            return self.boxcar_shutter(timestamps, self.period, self.duty, phase)
         elif self.shutter_type == 'morlet':
-            return np.array([self.morlet_shutter(t, self.morlet_freq, self.morlet_sigma) 
-                            for t in timestamps])
+            # Pass entire array directly - morlet_shutter handles arrays
+            return self.morlet_shutter(timestamps, self.morlet_freq, self.morlet_sigma)
         elif self.shutter_type == 'no_shutter':
-            return np.array([self.no_shutter(t) for t in timestamps])
+            # Pass entire array directly - no_shutter handles arrays
+            return self.no_shutter(timestamps)
         else:
             raise ValueError(f"Unknown shutter type: {self.shutter_type}")
         

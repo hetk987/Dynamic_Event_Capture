@@ -186,18 +186,19 @@ def process_dual_pipeline(file_path, output_dir, fps=30, events_per_frame=10000,
                 # Add events to time-based generator
                 frame_gen_time.add_events(batch_ts, batch_x, batch_y, batch_pol)
                 
-                # Check if it's time to generate a time-based frame
+                # Check if it's time to generate time-based frame(s)
+                # Handle case where batch spans multiple frame intervals
                 current_time_s = batch_ts_s[-1] if len(batch_ts_s) > 0 else last_frame_time_s
-                time_frame_end_s = last_frame_time_s + frame_interval
                 
-                if current_time_s >= time_frame_end_s:
+                # Generate all frames that should have been created in this batch
+                while current_time_s >= last_frame_time_s + frame_interval:
                     frame = frame_gen_time.get_frame()
                     time_frame_counter += 1
                     frame_path = os.path.join(time_based_dir, format_frame_number(time_frame_counter))
                     save_frame_jpeg(frame, frame_path, jpeg_quality)
                     
                     frame_gen_time.reset_frame()
-                    last_frame_time_s = time_frame_end_s
+                    last_frame_time_s += frame_interval
                 
                 # Add events to event-based generator
                 events_added, should_generate = frame_gen_event.add_events(
