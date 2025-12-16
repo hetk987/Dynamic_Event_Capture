@@ -8,8 +8,12 @@ Supports time-based and event-based frame generation
 import argparse
 import cv2
 import os
+import sys
 import numpy as np
 import time
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Try to import dv library for reading AEDAT4
 try:
@@ -25,7 +29,7 @@ from utils.video_writer import VideoWriter
 
 # Configuration
 FILE_PATH = './data/dvSave-2025_11_12_20_21_55.aedat4'
-OUTPUT_PATH = './output/stop.mp4'
+OUTPUT_PATH = './output/scene_3v3.mp4'
 PIPELINE_TYPE = 'time_based'  # 'time_based' or 'event_based'
 FPS = 30
 EVENTS_PER_FRAME = 10000

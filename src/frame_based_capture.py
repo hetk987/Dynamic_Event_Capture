@@ -9,8 +9,12 @@ import cv2
 import threading
 import time
 import os
+import sys
 from collections import deque
 import numpy as np
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Try to import both camera libraries
 try:
@@ -31,26 +35,28 @@ from utils.adaptive_decay import AdaptiveDecayController
 
 
 # Configuration
-INPUT_SOURCE = 'camera'  # 'camera' or 'file'
-FILE_PATH = './data/dvSave-2025_10_22_18_42_06.aedat4'
+INPUT_SOURCE = 'file'  # 'camera' or 'file'
+FILE_PATH = './Research_Videos/het/scene 1/combined-1-2025_11_19_12_46_53.aedat4'
 FPS = 30
 ENABLE_MP4_RECORDING = True
-OUTPUT_PATH = './output/no_light_recording.mp4'
-SHUTTER_TYPE = 'no_shutter' # 'boxcar', 'morlet', 'no_shutter'
-BOXCAR_PERIOD = 0.1
-BOXCAR_DUTY = 0.25
+OUTPUT_PATH = './output/het/scene1.mp4'
+SHUTTER_TYPE = 'boxcar' # 'boxcar', 'morlet', 'no_shutter'
+BOXCAR_PERIOD = 0.04
+BOXCAR_DUTY = 0.35
 BRIGHTNESS = 3.0  # Brightness multiplier (1.0 = normal, >1.0 = brighter, <1.0 = darker)
-DECAY_RATE = 0.5  # Frame persistence decay (1.0 = no decay, 0.95 = 5% fade per frame)
+DECAY_RATE = 0.0  # Frame persistence decay (1.0 = no decay, 0.95 = 5% fade per frame)
 
 # Camera settings
 DOWNSAMPLING = 10
-BUFFER_SIZE = 50000
+BUFFER_SIZE = 200000
 
 # Global data buffers and flags
 event_buffer = deque(maxlen=BUFFER_SIZE)
 data_lock = threading.Lock()
 running = True
+file_reading_complete = False
 camera_resolution = None
+disable_pacing = False  # Global flag to disable file reading pacing
 
 
 def stream_camera_data():
@@ -129,7 +135,7 @@ def get_comparison_paths(output_path):
 
 def read_file_data(file_path):
     """Read events from AEDAT4 file"""
-    global event_buffer, running
+    global event_buffer, running, file_reading_complete, disable_pacing
     
     if not DV_OLD_AVAILABLE:
         print("Error: dv library not available. Install it with: pip install dv")
@@ -161,8 +167,8 @@ def read_file_data(file_path):
                     chunk_time_us = event['timestamp'] - current_chunk_start_us
                     chunk_time_s = chunk_time_us * 1e-6
                     
-                    # Sleep only if the chunk time is reasonable
-                    if 0.001 <= chunk_time_s <= 0.1:  # Between 1ms and 100ms
+                    # Sleep only if pacing is enabled and chunk time is reasonable
+                    if not disable_pacing and 0.001 <= chunk_time_s <= 0.1:  # Between 1ms and 100ms
                         time.sleep(chunk_time_s)
                     
                     current_chunk_start_us = event['timestamp']
@@ -183,16 +189,18 @@ def read_file_data(file_path):
                     last_report_time = time.time()
         
         print("Finished reading file")
+        file_reading_complete = True
         
     except Exception as e:
         print(f"Error reading file: {e}")
+        file_reading_complete = True
         running = False
 
 
 def main():
     """Main function"""
     global INPUT_SOURCE, FILE_PATH, FPS, ENABLE_MP4_RECORDING, OUTPUT_PATH
-    global SHUTTER_TYPE, BOXCAR_PERIOD, BOXCAR_DUTY, BRIGHTNESS, DECAY_RATE, event_buffer, running
+    global SHUTTER_TYPE, BOXCAR_PERIOD, BOXCAR_DUTY, BRIGHTNESS, DECAY_RATE, event_buffer, running, file_reading_complete, disable_pacing
     
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Frame-based Event Camera Capture with DCE')
@@ -232,6 +240,10 @@ def main():
                        help='Minimum change required to update decay (prevents flicker)')
     parser.add_argument('--enable-adaptive-decay', action='store_true',
                        help='Enable adaptive decay based on scene activity')
+    parser.add_argument('--no-pacing', action='store_true',
+                       help='Disable file reading pacing (process files as fast as possible)')
+    parser.add_argument('--use-event-time', action='store_true',
+                       help='Generate frames based on event timestamps instead of wall-clock time (recommended for file processing)')
     
     args = parser.parse_args()
     
@@ -247,6 +259,8 @@ def main():
     BRIGHTNESS = args.brightness
     DECAY_RATE = args.decay_rate
     ENABLE_ADAPTIVE_DECAY = args.enable_adaptive_decay
+    disable_pacing = args.no_pacing
+    use_event_time = args.use_event_time
     
     # Initialize adaptive decay controller if enabled
     decay_ctrl = None
@@ -393,18 +407,50 @@ def main():
         print(f"Adaptive Decay: ON (min={args.min_decay}, max={args.max_decay})")
     else:
         print(f"Adaptive Decay: OFF (decay={DECAY_RATE})")
+    if INPUT_SOURCE == 'file':
+        print(f"File Pacing: {'DISABLED (fast processing)' if disable_pacing else 'ENABLED (real-time simulation)'}")
+        print(f"Frame Timing: {'Event timestamps' if use_event_time else 'Wall-clock time'}")
     print("=" * 60 + "\n")
     
     frame_interval = 1.0 / FPS
+    frame_interval_us = frame_interval * 1e6  # Frame interval in microseconds
     last_frame_time = time.time()
     frame_counter = 0
+    
+    # Timing diagnostics
+    start_wallclock_time = time.time()
+    first_event_timestamp_us = None
+    last_event_timestamp_us = None
+    total_events_processed = 0
+    
+    # Event-time based frame generation
+    next_frame_timestamp_us = None  # Will be set when first events arrive
     
     # Main loop
     while running:
         current_time = time.time()
         
-        # Check if it's time to generate a new frame
-        if current_time - last_frame_time >= frame_interval:
+        # Determine if it's time to generate a new frame
+        should_generate_frame = False
+        
+        if use_event_time and INPUT_SOURCE == 'file':
+            # Event-time mode: check if we have events for the next frame time
+            with data_lock:
+                if len(event_buffer) > 0:
+                    if next_frame_timestamp_us is None:
+                        # Initialize next frame time to first event timestamp
+                        next_frame_timestamp_us = list(event_buffer)[0]['timestamp']
+                    
+                    # Check if we have events at or past the next frame time
+                    latest_event_ts = list(event_buffer)[-1]['timestamp']
+                    if latest_event_ts >= next_frame_timestamp_us or file_reading_complete:
+                        should_generate_frame = True
+        else:
+            # Wall-clock mode: check if enough real time has passed
+            if current_time - last_frame_time >= frame_interval:
+                should_generate_frame = True
+        
+        if should_generate_frame:
             # Get events from buffer
             with data_lock:
                 if len(event_buffer) > 0:
@@ -418,11 +464,22 @@ def main():
                         y_coords = np.array([e['y'] for e in events_list])
                         polarities = np.array([e['polarity'] for e in events_list])
                         
-                        # Get events within one frame interval
-                        t0 = timestamps[0]
-                        t_end = t0 + (frame_interval * 1e6)  # Convert to microseconds
+                        # Track event time progression for diagnostics
+                        if first_event_timestamp_us is None:
+                            first_event_timestamp_us = timestamps[0]
+                        last_event_timestamp_us = timestamps[-1]
                         
-                        mask = timestamps < t_end
+                        # Get events within one frame interval
+                        if use_event_time and INPUT_SOURCE == 'file':
+                            # Event-time mode: use next_frame_timestamp_us
+                            t0 = next_frame_timestamp_us if next_frame_timestamp_us is not None else timestamps[0]
+                            t_end = t0 + frame_interval_us
+                            mask = (timestamps >= t0) & (timestamps < t_end)
+                        else:
+                            # Wall-clock mode: use current buffer contents
+                            t0 = timestamps[0]
+                            t_end = t0 + frame_interval_us
+                            mask = timestamps <= t_end
                         
                         if np.any(mask):
                             if comparison_mode:
@@ -467,12 +524,17 @@ def main():
                                 
                                 # Remove processed events
                                 num_to_remove = np.sum(mask)
+                                total_events_processed += num_to_remove
                                 for _ in range(num_to_remove):
                                     event_buffer.popleft()
                                 
                                 # Reset both frame buffers with same decay
                                 frame_gen_dce.reset_frame(decay_override=decay_override)
                                 frame_gen_no_dce.reset_frame(decay_override=decay_override)
+                                
+                                # Advance next frame timestamp in event-time mode
+                                if use_event_time and INPUT_SOURCE == 'file':
+                                    next_frame_timestamp_us += frame_interval_us
                             else:
                                 # Normal mode: single video with optional display
                                 num_added = frame_gen.add_events(
@@ -510,13 +572,26 @@ def main():
                                 
                                 # Remove processed events
                                 num_to_remove = np.sum(mask)
+                                total_events_processed += num_to_remove
                                 for _ in range(num_to_remove):
                                     event_buffer.popleft()
                                 
                                 # Reset frame buffer with adaptive decay
                                 frame_gen.reset_frame(decay_override=decay_override)
+                                
+                                # Advance next frame timestamp in event-time mode
+                                if use_event_time and INPUT_SOURCE == 'file':
+                                    next_frame_timestamp_us += frame_interval_us
             
             last_frame_time = current_time
+        
+        # Auto-exit when file processing is complete (file mode only)
+        if INPUT_SOURCE == 'file' and file_reading_complete:
+            with data_lock:
+                buffer_size = len(event_buffer)
+            if buffer_size < 100:
+                print(f"\nFile processing complete. Event buffer drained ({buffer_size} events remaining).")
+                running = False
         
         # Check for quit (only in normal mode)
         if not comparison_mode:
@@ -534,6 +609,35 @@ def main():
     
     # Cleanup
     print("\nShutting down...")
+    
+    # Print timing diagnostics
+    wallclock_elapsed = time.time() - start_wallclock_time
+    if first_event_timestamp_us is not None and last_event_timestamp_us is not None:
+        event_time_span_us = last_event_timestamp_us - first_event_timestamp_us
+        event_time_span_s = event_time_span_us * 1e-6
+        expected_video_duration = frame_counter / FPS
+        
+        print("\n" + "=" * 60)
+        print("TIMING DIAGNOSTICS")
+        print("=" * 60)
+        print(f"Wall-clock time elapsed:    {wallclock_elapsed:.2f} seconds")
+        print(f"Event time span:            {event_time_span_s:.2f} seconds")
+        print(f"Frames generated:           {frame_counter}")
+        print(f"Expected video duration:    {expected_video_duration:.2f} seconds")
+        print(f"Total events processed:     {total_events_processed:,}")
+        print(f"Average FPS (wall-clock):   {frame_counter / wallclock_elapsed:.2f}")
+        
+        if event_time_span_s > 0:
+            time_ratio = event_time_span_s / wallclock_elapsed
+            print(f"Event time / Wall-clock:    {time_ratio:.2f}x")
+            if time_ratio < 0.95:
+                print("⚠️  Video may be SLOWER than expected (event time < wall-clock)")
+            elif time_ratio > 1.05:
+                print("⚠️  Video may be FASTER than expected (event time > wall-clock)")
+            else:
+                print("✓ Timing ratio is within acceptable range")
+        print("=" * 60 + "\n")
+    
     if comparison_mode:
         if video_writer_dce:
             video_writer_dce.release()

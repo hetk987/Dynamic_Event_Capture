@@ -10,8 +10,12 @@ Save frames as JPEG images in separate folders
 import argparse
 import cv2
 import os
+import sys
 import numpy as np
 import time
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Try to import dv library for reading AEDAT4
 try:
@@ -25,10 +29,10 @@ from utils.event_based_generator import EventBasedFrameGenerator
 
 
 # Configuration
-FILE_PATH = './data/dvSave-2025_11_12_20_21_55.aedat4'
+FILE_PATH = './Research_Videos/joel/scene 1/combined-1-2025_11_19_12_32_02.aedat4'
 FPS = 30
 EVENTS_PER_FRAME = 10000
-OUTPUT_DIR = './output/'
+OUTPUT_DIR = './output/joel'
 JPEG_QUALITY = 85
 SHUTTER_TYPE = 'boxcar'
 BOXCAR_PERIOD = 0.1

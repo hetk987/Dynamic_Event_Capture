@@ -134,21 +134,21 @@ Successfully implemented a time-based frame generation system for event camera d
 ### Basic Usage
 ```bash
 # From file
-python frame_based_capture.py --source file --file ./data/recording.aedat4
+python src/frame_based_capture.py --source file --file ./data/recording.aedat4
 
 # From camera
-python frame_based_capture.py --source camera
+python src/frame_based_capture.py --source camera
 ```
 
 ### With Recording
 ```bash
-python frame_based_capture.py --source file --file ./data/recording.aedat4 \
+python src/frame_based_capture.py --source file --file ./data/recording.aedat4 \
     --record --output ./output/my_recording.mp4
 ```
 
 ### Custom DCE
 ```bash
-python frame_based_capture.py --source file --file ./data/recording.aedat4 \
+python src/frame_based_capture.py --source file --file ./data/recording.aedat4 \
     --shutter boxcar --period 0.15 --duty 0.3
 ```
 
@@ -157,8 +157,8 @@ python frame_based_capture.py --source file --file ./data/recording.aedat4 \
 The implementation is complete and ready for testing. To run:
 
 1. Install dependencies: `pip install -r requirements.txt`
-2. Run with test data: `python frame_based_capture.py --source file --file ./data/dvSave-2025_10_22_18_39_29.aedat4`
-3. Test camera: `python frame_based_capture.py --source camera`
+2. Run with test data: `python src/frame_based_capture.py --source file --file ./data/dvSave-2025_10_22_18_39_29.aedat4`
+3. Test camera: `python src/frame_based_capture.py --source camera`
 4. Test recording: Add `--record` flag
 
 ## Future Enhancements

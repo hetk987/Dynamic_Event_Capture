@@ -9,4 +9,7 @@ dv-processing
 # Video and image processing
 opencv-python
 
+# Progress bars
+tqdm
+
 glfw

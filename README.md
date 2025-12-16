@@ -2,6 +2,15 @@
 
 A Python-based system for processing event camera data (DVXplorer) into traditional video frames using Digital Coded Exposure (DCE) techniques. Supports both live camera streaming and pre-recorded AEDAT4 files.
 
+## What is This?
+
+This project converts event camera data into traditional video frames by applying Digital Coded Exposure (DCE) weighting functions. Event cameras capture changes in brightness asynchronously, producing a stream of events rather than traditional frames. This system:
+
+-   Generates frames at configurable frame rates (default 30fps)
+-   Applies DCE shutter functions (boxcar, Morlet wavelet) to weight events based on temporal patterns
+-   Supports both live camera capture and pre-recorded file processing
+-   Outputs MP4 videos or individual frame images
+
 ## Features
 
 -   **Real-time frame generation** from event camera data at configurable FPS (default 30fps)
@@ -35,38 +44,45 @@ pip install -r requirements.txt
 pip install dv  # Additional package for file reading
 ```
 
+**Note**: This project requires Python 3.8 to 3.12. Python 3.13 and higher are not supported.
+
 ### Basic Usage
 
 **View pre-recorded data:**
 
 ```bash
-python frame_based_capture.py --source file --file ./data/dvSave-2025_10_22_18_39_29.aedat4
+python src/frame_based_capture.py --source file --file ./data/dvSave-2025_10_22_18_39_29.aedat4
 ```
 
 **View live camera:**
 
 ```bash
-python frame_based_capture.py --source camera
+python src/frame_based_capture.py --source camera
 ```
 
-**Record to MP4:**
+**Record to MP4 (with correct timing):**
 
 ```bash
-python frame_based_capture.py --source file \
+python src/frame_based_capture.py --source file \
     --file ./data/dvSave-2025_10_22_18_39_29.aedat4 \
     --record \
-    --output ./output/my_video.mp4
+    --output ./output/videos/my_video.mp4 \
+    --use-event-time \
+    --no-pacing
 ```
 
-For more detailed usage examples, see [docs/QUICK_START.md](docs/QUICK_START.md).
+**Important**: Always use `--use-event-time` when processing files to ensure video duration matches recording duration. See [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for details.
+
+For more detailed usage examples, see [docs/USAGE.md](docs/USAGE.md).
 
 ## Project Structure
 
 ```
 .
-├── frame_based_capture.py    # Main frame-based capture script
-├── record_events.py          # Event recording to AEDAT4 format
-├── process_dual_pipeline.py  # Dual pipeline processing (time + event-based)
+├── src/                      # Main application scripts
+│   ├── frame_based_capture.py    # Main frame-based capture script
+│   ├── record_events.py          # Event recording to AEDAT4 format
+│   └── process_dual_pipeline.py  # Dual pipeline processing (time + event-based)
 ├── utils/                    # Utility modules
 │   ├── frame_generator.py    # Frame generation from events
 │   ├── event_based_generator.py  # Event-based frame generation
@@ -74,27 +90,30 @@ For more detailed usage examples, see [docs/QUICK_START.md](docs/QUICK_START.md)
 │   ├── video_writer.py       # MP4 video output
 │   └── adaptive_decay.py     # Adaptive decay controller
 ├── scripts/                  # Utility scripts
-│   └── setup_camera.py       # Camera setup helper
+│   ├── setup_camera.py       # Camera setup helper
+│   ├── aedat_to_mp4.py       # AEDAT to MP4 converter
+│   ├── check_video_fps.py    # Video FPS diagnostic tool
+│   └── create_timestamp_based_frames.py  # Timestamp analysis tool
 ├── tests/                    # Test scripts
 │   ├── test_camera.py        # Camera connection test
 │   └── test_visualization.py # Visualization test
 ├── docs/                     # Documentation
 │   ├── SETUP.md              # Complete setup guide
-│   ├── QUICK_START.md        # Quick start guide
-│   ├── FRAME_BASED_README.md # Frame-based capture documentation
-│   ├── COMPARISON_MODE_SUMMARY.md  # Comparison mode docs
-│   └── IMPLEMENTATION_SUMMARY.md   # Implementation details
-├── archive/                  # Old/experimental scripts
-│   ├── Dynamic_Frames_With_DCA.py  # Old visualization script
-│   └── Plot_wDCE.py          # Old plotting script
+│   ├── USAGE.md              # Comprehensive usage guide
+│   └── TROUBLESHOOTING.md    # Troubleshooting and fixes
+├── archive/                  # Old/experimental scripts and historical docs
 ├── data/                     # Input data files (AEDAT4)
 ├── output/                   # Output videos and frames
+│   ├── videos/               # Main video outputs
+│   ├── event_based/          # Event-based frame outputs
+│   └── time_based/           # Time-based frame outputs
+├── Research_Videos/          # Research video recordings
 └── requirements.txt          # Python dependencies
 ```
 
 ## Main Scripts
 
-### `frame_based_capture.py`
+### `src/frame_based_capture.py`
 
 Main script for frame-based event camera capture with DCE. Supports live camera and file input, real-time display, and MP4 recording.
 
@@ -105,11 +124,13 @@ Main script for frame-based event camera capture with DCE. Supports live camera 
 -   Adaptive decay based on scene activity
 -   Comparison mode for DCE vs no-DCE videos
 
-### `record_events.py`
+See [docs/USAGE.md](docs/USAGE.md) for complete documentation.
+
+### `src/record_events.py`
 
 Records events from camera or file to AEDAT4 format for later processing.
 
-### `process_dual_pipeline.py`
+### `src/process_dual_pipeline.py`
 
 Processes events through two pipelines simultaneously:
 
@@ -118,18 +139,31 @@ Processes events through two pipelines simultaneously:
 
 Outputs frames as JPEG images in separate directories.
 
+## Utility Scripts
+
+### `scripts/aedat_to_mp4.py`
+
+Converts AEDAT4 event camera files to MP4 video files. Supports both time-based and event-based frame generation.
+
+### `scripts/check_video_fps.py`
+
+Diagnostic tool to check the actual FPS metadata of MP4 video files.
+
+### `scripts/create_timestamp_based_frames.py`
+
+Helper script to analyze event timestamp distribution in AEDAT4 files, useful for diagnosing timing issues.
+
 ## Documentation
 
 -   **[Setup Guide](docs/SETUP.md)** - Complete setup instructions (git clone, environment, installation)
--   **[Quick Start Guide](docs/QUICK_START.md)** - Get started quickly
--   **[Frame-Based Capture](docs/FRAME_BASED_README.md)** - Detailed documentation for frame-based capture
--   **[Comparison Mode](docs/COMPARISON_MODE_SUMMARY.md)** - Comparison mode documentation
--   **[Implementation Summary](docs/IMPLEMENTATION_SUMMARY.md)** - Technical implementation details
+-   **[Usage Guide](docs/USAGE.md)** - Comprehensive usage documentation for all scripts and features
+-   **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)** - Common issues, fixes, and diagnostic tools
 
 ## Requirements
 
--   Python 3.8+
+-   Python 3.8 to 3.12 (Python 3.13+ is not supported)
 -   dv-processing (for camera support)
+-   dv (for file reading)
 -   opencv-python (for video processing)
 -   numpy
 -   vispy (for visualization, optional)
@@ -143,6 +177,22 @@ Test camera connection:
 ```bash
 python tests/test_camera.py
 ```
+
+## Common Issues
+
+### Video Duration Too Long
+
+**Solution**: Always use `--use-event-time` flag when processing files. See [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for details.
+
+### Camera Not Detected
+
+**Solution**: Run `python tests/test_camera.py` to diagnose. See [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for more solutions.
+
+### Import Errors
+
+**Solution**: Ensure virtual environment is activated and all packages are installed. See [SETUP.md](docs/SETUP.md) for installation instructions.
+
+For more troubleshooting help, see [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ## License
 

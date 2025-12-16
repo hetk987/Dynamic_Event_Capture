@@ -76,7 +76,7 @@ video_writer_no_dce.write_frame(frame_no_dce)
 
 ### Basic Comparison Recording
 ```bash
-python frame_based_capture.py \
+python src/frame_based_capture.py \
     --source file \
     --file ./data/dvSave-2025_10_22_18_42_06.aedat4 \
     --record-comparison \
@@ -88,7 +88,7 @@ python frame_based_capture.py \
 
 ### With Morlet Shutter
 ```bash
-python frame_based_capture.py \
+python src/frame_based_capture.py \
     --source file \
     --file ./data/dvSave-2025_10_22_18_42_06.aedat4 \
     --record-comparison \
@@ -98,7 +98,7 @@ python frame_based_capture.py \
 
 ### With Live Camera
 ```bash
-python frame_based_capture.py \
+python src/frame_based_capture.py \
     --source camera \
     --record-comparison \
     --output ./output/live_comparison.mp4 \
